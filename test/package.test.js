@@ -17,6 +17,8 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
+const { pathToFileURL } = require('node:url');
+const acorn = require('acorn');
 const { encodeOutput } = require('./golden-codec');
 const golden = require('./fixtures/golden.json');
 
@@ -53,7 +55,12 @@ const assertGolden = (normalize, label) => {
 };
 
 test('tarball ships the built entry points and no sources', () => {
-  for (const f of ['package.json', 'README.md', 'dist/index.js', 'dist/index.es.js', 'dist/index.d.ts', 'dist/cli.js']) {
+  const expected = [
+    'package.json', 'README.md',
+    'dist/index.js', 'dist/index.js.map', 'dist/index.es.js', 'dist/index.es.js.map',
+    'dist/index.d.ts', 'dist/lib.d.ts', 'dist/cli.js', 'dist/cli.d.ts',
+  ];
+  for (const f of expected) {
     assert.ok(packedFiles.includes(f), `missing ${f} in ${packedFiles.join(', ')}`);
   }
   const unexpected = packedFiles.filter((f) => !(f === 'package.json' || f === 'README.md' || f === 'LICENSE' || f.startsWith('dist/')));
@@ -64,6 +71,18 @@ test('package.json main/module/types/bin point to files in the tarball', () => {
   for (const key of ['main', 'module', 'types', 'bin']) {
     assert.equal(typeof pkgJson[key], 'string', `${key} should be a string`);
     assert.ok(fs.existsSync(path.join(pkgDir, pkgJson[key])), `${key}: ${pkgJson[key]} does not exist`);
+  }
+});
+
+// tsconfig targets es2020. A toolchain upgrade must not raise the syntax level
+// of the shipped code, or engines that load 0.0.4 today could no longer load it.
+test('shipped JavaScript parses as ES2020', () => {
+  for (const [key, sourceType] of [['main', 'script'], ['module', 'module'], ['bin', 'script']]) {
+    const code = fs.readFileSync(path.join(pkgDir, pkgJson[key]), 'utf8');
+    assert.doesNotThrow(
+      () => acorn.parse(code, { ecmaVersion: 2020, sourceType, allowHashBang: true }),
+      `${key}: ${pkgJson[key]}`,
+    );
   }
 });
 
@@ -79,7 +98,7 @@ test('import of the module entry (ESM, as bundlers consume it)', async () => {
   // so Node itself would load it as CommonJS. Copy it to .mjs to load it as ESM.
   const esmFile = path.join(tmpDir, 'index.mjs');
   fs.copyFileSync(path.join(pkgDir, pkgJson.module), esmFile);
-  const mod = await import(esmFile);
+  const mod = await import(pathToFileURL(esmFile).href);
   assert.deepStrictEqual(Object.keys(mod).sort(), ['normalize']);
   assertGolden(mod.normalize, 'esm');
 });
@@ -98,12 +117,14 @@ test('CLI (bin) prints "<lat> <lng>" for every golden input', () => {
     assert.ok(fs.statSync(cli).mode & 0o111, 'cli should be executable');
   }
 
-  const decode = (v) => ({ undefined, '-0': -0, NaN }[v] ?? v);
+  // The CLI prints String(value): undefined -> "undefined", -0 -> "0", NaN -> "NaN".
+  const decode = (v) => (v === '-0' ? -0 : v);
   for (const { input, output } of golden) {
     if (input === '') continue; // an empty argument is an error, tested below
     const res = spawnSync(process.execPath, [cli, input], { encoding: 'utf8' });
     assert.equal(res.status, 0, `exit status for ${JSON.stringify(input)}: ${res.stderr}`);
-    assert.equal(res.stdout, `${decode(output[0].lat)} ${decode(output[0].lng)}\n`, JSON.stringify(input));
+    const expected = `${String(decode(output[0].lat))} ${String(decode(output[0].lng))}\n`;
+    assert.equal(res.stdout, expected, JSON.stringify(input));
   }
 });
 
@@ -136,10 +157,15 @@ test('TypeScript types: a consumer compiles under strict mode', () => {
     '',
   ].join('\n'));
 
+  // types: [] keeps @types/* (pulled in by jest, versions drift) out of the check;
+  // the consumer needs only the package's own .d.ts.
+  fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: {
+      noEmit: true, strict: true, module: 'commonjs', moduleResolution: 'node', types: [],
+    },
+    files: ['consumer.ts'],
+  }));
   const tsc = require.resolve('typescript/bin/tsc', { paths: [repoDir] });
-  const res = spawnSync(process.execPath, [
-    tsc, '--noEmit', '--strict', '--module', 'commonjs', '--moduleResolution', 'node',
-    '--types', 'node', '--typeRoots', path.join(repoDir, 'node_modules', '@types'), consumer,
-  ], { cwd: tmpDir, encoding: 'utf8' });
+  const res = spawnSync(process.execPath, [tsc, '-p', tmpDir], { cwd: tmpDir, encoding: 'utf8' });
   assert.equal(res.status, 0, res.stdout + res.stderr);
 });

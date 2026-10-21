@@ -19,10 +19,11 @@
     "test:package": "npm run build && node --test test/package.test.js"
   },
   "devDependencies": {
+    "@geolonia/eslint-config": "^0.0.7",
     "@rollup/plugin-commonjs": "^22.0.0",
     "@rollup/plugin-node-resolve": "^13.2.1",
-    "@geolonia/eslint-config": "^0.0.7",
     "@types/jest": "^28",
+    "acorn": "^8.10.0",
     "eslint": "^8.47.0",
     "jest": "^28",
     "rollup": "^2.70.2",
