@@ -8,6 +8,9 @@
  *
  * Uses node:test instead of jest so that it keeps working while jest itself
  * is being upgraded. Run `npm run build` first (`npm run test:package` does).
+ *
+ * POSIX only, like the build script (rm, chmod) and CI (ubuntu): it uses tar,
+ * file modes and the CLI's shebang.
  */
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -32,12 +35,11 @@ let packedFiles;
 
 before(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'normalize-any-latlng-'));
-  // Under `npm run`, npm_execpath is npm's CLI script; run it with node so that
-  // Windows (where `npm` is npm.cmd and needs a shell) works too.
+  // Under `npm run`, npm_execpath is the npm CLI that started us; use the same one.
   const npmArgs = ['pack', '--json', '--pack-destination', tmpDir];
   const [packed] = JSON.parse(process.env.npm_execpath
     ? execFileSync(process.execPath, [process.env.npm_execpath, ...npmArgs], { cwd: repoDir, encoding: 'utf8' })
-    : execFileSync('npm', npmArgs, { cwd: repoDir, encoding: 'utf8', shell: process.platform === 'win32' }));
+    : execFileSync('npm', npmArgs, { cwd: repoDir, encoding: 'utf8' }));
   packedFiles = packed.files.map((f) => f.path).sort();
 
   pkgDir = path.join(tmpDir, 'node_modules', PKG_NAME);
@@ -115,9 +117,7 @@ test('browser global NormalizeAnyLatLng (main, UMD without a module system)', ()
 test('CLI (bin) prints "<lat> <lng>" for every golden input', () => {
   const cli = path.join(pkgDir, pkgJson.bin);
   assert.match(fs.readFileSync(cli, 'utf8'), /^#!\/usr\/bin\/env node\n/);
-  if (process.platform !== 'win32') {
-    assert.ok(fs.statSync(cli).mode & 0o111, 'cli should be executable');
-  }
+  assert.ok(fs.statSync(cli).mode & 0o111, 'cli should be executable');
 
   // The CLI prints String(value): undefined -> "undefined", -0 -> "0", NaN -> "NaN".
   const decode = (v) => (v === '-0' ? -0 : v);
@@ -137,7 +137,7 @@ test('CLI exits 1 without an argument', () => {
   assert.match(res.stderr, /^Invalid LatLng string/);
 });
 
-test('CLI runs directly through its shebang', { skip: process.platform === 'win32' }, () => {
+test('CLI runs directly through its shebang', () => {
   const out = execFileSync(path.join(pkgDir, pkgJson.bin), ['N35.1234, E135.6789'], { encoding: 'utf8' });
   assert.equal(out, '35.1234 135.6789\n');
 });
