@@ -32,10 +32,12 @@ let packedFiles;
 
 before(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'normalize-any-latlng-'));
-  const [packed] = JSON.parse(execFileSync(
-    'npm', ['pack', '--json', '--pack-destination', tmpDir],
-    { cwd: repoDir, encoding: 'utf8' },
-  ));
+  // Under `npm run`, npm_execpath is npm's CLI script; run it with node so that
+  // Windows (where `npm` is npm.cmd and needs a shell) works too.
+  const npmArgs = ['pack', '--json', '--pack-destination', tmpDir];
+  const [packed] = JSON.parse(process.env.npm_execpath
+    ? execFileSync(process.execPath, [process.env.npm_execpath, ...npmArgs], { cwd: repoDir, encoding: 'utf8' })
+    : execFileSync('npm', npmArgs, { cwd: repoDir, encoding: 'utf8', shell: process.platform === 'win32' }));
   packedFiles = packed.files.map((f) => f.path).sort();
 
   pkgDir = path.join(tmpDir, 'node_modules', PKG_NAME);
